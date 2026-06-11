@@ -34,6 +34,8 @@ def _memory_from_row(row) -> Memory:  # noqa: ANN001
         weight=row["weight"],
         created_at=datetime_from_db(row["created_at"]),
         last_activated_at=datetime_from_db(row["last_activated_at"]),
+        is_absorbed=bool(row["is_absorbed"]),
+        absorbed_by_pattern_id=row["absorbed_by_pattern_id"],
     )
 
 
@@ -51,10 +53,14 @@ def _association_from_row(row) -> Association:  # noqa: ANN001
 def _pattern_from_row(row) -> Pattern:  # noqa: ANN001
     return Pattern(
         id=row["id"],
-        description=row["description"],
-        strength=row["strength"],
-        evidence_memory_ids=json.loads(row["evidence_memory_ids"]),
+        summary=row["summary"],
+        importance=row["importance"],
+        weight=row["weight"],
+        evidence_count=row["evidence_count"],
+        concepts=json.loads(row["concepts"]),
+        tone=row["tone"],
         concept_key=row["concept_key"],
+        evidence_memory_ids=json.loads(row["evidence_memory_ids"]),
         created_at=datetime_from_db(row["created_at"]),
         updated_at=datetime_from_db(row["updated_at"]),
     )
@@ -78,8 +84,8 @@ def save_memory(session: Session, memory: Memory) -> Memory:
     if memory.id is None:
         cursor = session.execute(
             """
-            INSERT INTO memory (summary, importance, weight, created_at, last_activated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO memory (summary, importance, weight, created_at, last_activated_at, is_absorbed, absorbed_by_pattern_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 memory.summary,
@@ -87,6 +93,8 @@ def save_memory(session: Session, memory: Memory) -> Memory:
                 memory.weight,
                 datetime_to_db(memory.created_at),
                 datetime_to_db(memory.last_activated_at),
+                int(memory.is_absorbed),
+                memory.absorbed_by_pattern_id,
             ),
         )
         memory.id = cursor.lastrowid
@@ -94,7 +102,8 @@ def save_memory(session: Session, memory: Memory) -> Memory:
         session.execute(
             """
             UPDATE memory
-            SET summary = ?, importance = ?, weight = ?, created_at = ?, last_activated_at = ?
+            SET summary = ?, importance = ?, weight = ?, created_at = ?, last_activated_at = ?,
+                is_absorbed = ?, absorbed_by_pattern_id = ?
             WHERE id = ?
             """,
             (
@@ -103,6 +112,8 @@ def save_memory(session: Session, memory: Memory) -> Memory:
                 memory.weight,
                 datetime_to_db(memory.created_at),
                 datetime_to_db(memory.last_activated_at),
+                int(memory.is_absorbed),
+                memory.absorbed_by_pattern_id,
                 memory.id,
             ),
         )
@@ -113,18 +124,22 @@ def save_memory(session: Session, memory: Memory) -> Memory:
 def save_pattern(session: Session, pattern: Pattern) -> Pattern:
     """Insert or update a pattern."""
     values = (
-        pattern.description,
-        pattern.strength,
-        json.dumps(pattern.evidence_memory_ids),
-        pattern.concept_key,
+        pattern.summary,
+        pattern.importance,
+        pattern.weight,
+        pattern.evidence_count,
+        json.dumps(pattern.concepts),
+        pattern.tone,
         datetime_to_db(pattern.created_at),
         datetime_to_db(pattern.updated_at),
+        pattern.concept_key,
+        json.dumps(pattern.evidence_memory_ids),
     )
     if pattern.id is None:
         cursor = session.execute(
             """
-            INSERT INTO pattern (description, strength, evidence_memory_ids, concept_key, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO pattern (summary, importance, weight, evidence_count, concepts, tone, created_at, updated_at, concept_key, evidence_memory_ids)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -133,7 +148,8 @@ def save_pattern(session: Session, pattern: Pattern) -> Pattern:
         session.execute(
             """
             UPDATE pattern
-            SET description = ?, strength = ?, evidence_memory_ids = ?, concept_key = ?, created_at = ?, updated_at = ?
+            SET summary = ?, importance = ?, weight = ?, evidence_count = ?, concepts = ?, tone = ?,
+                created_at = ?, updated_at = ?, concept_key = ?, evidence_memory_ids = ?
             WHERE id = ?
             """,
             (*values, pattern.id),
@@ -199,9 +215,18 @@ def add_memory(
     return memory
 
 
-def list_memories(session: Session) -> list[Memory]:
+def list_memories(session: Session, include_absorbed: bool = False) -> list[Memory]:
     """Return memories sorted from most to least top-of-mind."""
-    return [_memory_from_row(row) for row in session.execute("SELECT * FROM memory ORDER BY weight DESC, id ASC")]
+    where = "" if include_absorbed else "WHERE is_absorbed = 0"
+    return [
+        _memory_from_row(row)
+        for row in session.execute(f"SELECT * FROM memory {where} ORDER BY weight DESC, id ASC")
+    ]
+
+
+def list_unabsorbed_memories(session: Session) -> list[Memory]:
+    """Return memories that have not been folded into a pattern."""
+    return list_memories(session, include_absorbed=False)
 
 
 def get_memory(session: Session, memory_id: int) -> Memory | None:
@@ -222,6 +247,8 @@ def refresh_memory(session: Session, memory: Memory) -> None:
     memory.weight = fresh.weight
     memory.created_at = fresh.created_at
     memory.last_activated_at = fresh.last_activated_at
+    memory.is_absorbed = fresh.is_absorbed
+    memory.absorbed_by_pattern_id = fresh.absorbed_by_pattern_id
 
 
 def memory_concepts(session: Session, memory_id: int) -> set[str]:
@@ -248,10 +275,19 @@ def associations_for_concept(session: Session, concept: str) -> list[Association
     return [_association_from_row(row) for row in rows]
 
 
-def concept_memory_map(session: Session) -> dict[str, set[int]]:
+def concept_memory_map(session: Session, include_absorbed: bool = False) -> dict[str, set[int]]:
     """Map concepts to associated memory IDs."""
     mapping: dict[str, set[int]] = defaultdict(set)
-    rows = session.execute("SELECT * FROM association WHERE source_type = 'memory' AND target_type = 'concept'")
+    absorbed_filter = "" if include_absorbed else "AND memory.is_absorbed = 0"
+    rows = session.execute(
+        f"""
+        SELECT association.* FROM association
+        JOIN memory ON memory.id = CAST(association.source_id AS INTEGER)
+        WHERE association.source_type = 'memory'
+          AND association.target_type = 'concept'
+          {absorbed_filter}
+        """
+    )
     for row in rows:
         mapping[row["target_id"]].add(int(row["source_id"]))
     return dict(mapping)
@@ -264,13 +300,13 @@ def get_pattern_by_key(session: Session, concept_key: str) -> Pattern | None:
 
 
 def list_patterns(session: Session) -> list[Pattern]:
-    """Return patterns sorted by strength descending."""
-    return [_pattern_from_row(row) for row in session.execute("SELECT * FROM pattern ORDER BY strength DESC, id ASC")]
+    """Return patterns sorted by weight descending."""
+    return [_pattern_from_row(row) for row in session.execute("SELECT * FROM pattern ORDER BY weight DESC, id ASC")]
 
 
 def strong_patterns(session: Session, minimum_strength: float) -> list[Pattern]:
     """Return patterns at or above a strength threshold."""
-    rows = session.execute("SELECT * FROM pattern WHERE strength >= ? ORDER BY strength DESC", (minimum_strength,))
+    rows = session.execute("SELECT * FROM pattern WHERE weight >= ? ORDER BY weight DESC", (minimum_strength,))
     return [_pattern_from_row(row) for row in rows]
 
 
