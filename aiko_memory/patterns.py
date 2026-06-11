@@ -37,7 +37,7 @@ def describe_pattern(concepts: tuple[str, ...], evidence_ids: set[int], session:
 
             evidence_concepts.update(memory_concepts(session, memory_id))
         if "laundry" in evidence_concepts or "home" in evidence_concepts:
-            return "Jack often leaves socks around the house."
+            return "Jack often leaves socks around the home."
         return "Jack often leaves socks out."
     if {"emi", "festival"}.issubset(concept_set):
         return "Emi seems nervous in festival crowds."
