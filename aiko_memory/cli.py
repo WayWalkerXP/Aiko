@@ -56,7 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_parser.add_argument("summary")
     add_parser.add_argument("--importance", type=float, default=50.0)
     add_parser.add_argument("--weight", type=float, default=50.0)
-    add_parser.add_argument("--tags", nargs="*", default=[])
+    add_parser.add_argument("--tags", action="append", nargs="+", default=[])
 
     tick_parser = subparsers.add_parser("tick", help="Apply time decay.")
     tick_parser.add_argument("--days", type=float, default=1.0)
@@ -80,7 +80,8 @@ def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     with get_session(args.db) as session:
         if args.command == "add":
-            memory = add_memory(session, args.summary, args.importance, args.weight, args.tags)
+            tags = [tag for tag_group in args.tags for tag in tag_group]
+            memory = add_memory(session, args.summary, args.importance, args.weight, tags)
             print(f"Added memory #{memory.id}: {memory.summary}")
         elif args.command == "tick":
             memories = apply_decay(session, args.days)
