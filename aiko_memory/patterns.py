@@ -71,8 +71,12 @@ def detect_patterns(session: Session) -> list[Pattern]:
         pattern = get_pattern_by_key(session, concept_key)
         if pattern is None:
             pattern = Pattern(
-                description=describe_pattern(concepts, evidence_ids, session),
-                strength=strength,
+                summary=describe_pattern(concepts, evidence_ids, session),
+                importance=25.0,
+                weight=strength,
+                evidence_count=len(evidence_ids),
+                concepts=list(concepts),
+                tone="neutral",
                 evidence_memory_ids=sorted(evidence_ids),
                 concept_key=concept_key,
             )
@@ -80,6 +84,8 @@ def detect_patterns(session: Session) -> list[Pattern]:
             pattern.description = describe_pattern(concepts, evidence_ids, session)
             pattern.strength = clamp(max(pattern.strength, strength) + 5.0)
             pattern.evidence_memory_ids = sorted(set(pattern.evidence_memory_ids) | evidence_ids)
+            pattern.evidence_count = len(pattern.evidence_memory_ids)
+            pattern.concepts = list(concepts)
             pattern.updated_at = now
         save_pattern(session, pattern)
         patterns.append(pattern)

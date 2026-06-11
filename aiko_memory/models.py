@@ -29,6 +29,8 @@ class Memory:
     id: int | None = None
     created_at: datetime = field(default_factory=utc_now)
     last_activated_at: datetime | None = None
+    is_absorbed: bool = False
+    absorbed_by_pattern_id: int | None = None
 
 
 @dataclass
@@ -45,15 +47,37 @@ class Association:
 
 @dataclass
 class Pattern:
-    """A recurring behavior or theme detected from memories."""
+    """A higher-level recurring behavior or theme detected from memories."""
 
-    description: str
-    strength: float
-    evidence_memory_ids: list[int]
-    concept_key: str
+    summary: str
+    importance: float
+    weight: float
+    evidence_count: int
+    concepts: list[str]
+    tone: str
     id: int | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
+    concept_key: str = ""
+    evidence_memory_ids: list[int] = field(default_factory=list)
+
+    @property
+    def description(self) -> str:
+        """Backward-compatible label used by existing pattern/opinion code."""
+        return self.summary
+
+    @description.setter
+    def description(self, value: str) -> None:
+        self.summary = value
+
+    @property
+    def strength(self) -> float:
+        """Backward-compatible strength used by existing pattern/opinion code."""
+        return self.weight
+
+    @strength.setter
+    def strength(self, value: float) -> None:
+        self.weight = value
 
 
 @dataclass

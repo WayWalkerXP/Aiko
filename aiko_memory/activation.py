@@ -13,7 +13,7 @@ def activate_concept(session: Session, concept: str) -> list[Memory]:
     now = utc_now()
     for association in associations_for_concept(session, concept):
         memory = get_memory(session, int(association.source_id))
-        if memory is None:
+        if memory is None or memory.is_absorbed:
             continue
         memory.weight = clamp(memory.weight + association.strength * ASSOCIATION_WEIGHT_BOOST_FACTOR)
         memory.last_activated_at = now

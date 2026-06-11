@@ -5,6 +5,7 @@ from pathlib import Path
 
 from aiko_memory.activation import activate_concept
 from aiko_memory.database import DEFAULT_DB_PATH, get_session
+from aiko_memory.consolidation import consolidate_memories
 from aiko_memory.decay import apply_decay
 from aiko_memory.opinions import generate_opinions
 from aiko_memory.patterns import detect_patterns
@@ -63,10 +64,14 @@ def build_parser() -> argparse.ArgumentParser:
     activate_parser = subparsers.add_parser("activate", help="Reactivate memories associated with a concept.")
     activate_parser.add_argument("concept")
 
-    subparsers.add_parser("memories", help="Display memories sorted by active weight.")
+    memories_parser = subparsers.add_parser("memories", help="Display memories sorted by active weight.")
+    memories_parser.add_argument("--include-absorbed", action="store_true", help="Include memories absorbed into patterns.")
+
+    subparsers.add_parser("consolidate", help="Summarize repeated low-importance memories into patterns.")
     subparsers.add_parser("patterns", help="Detect and display recurring patterns.")
     subparsers.add_parser("opinions", help="Generate and display opinions.")
-    subparsers.add_parser("thoughts", help="Display what is currently on Aiko's mind.")
+    thoughts_parser = subparsers.add_parser("thoughts", help="Display what is currently on Aiko's mind.")
+    thoughts_parser.add_argument("--include-absorbed", action="store_true", help="Include absorbed memories in current thoughts.")
     return parser
 
 
@@ -85,18 +90,40 @@ def main(argv: list[str] | None = None) -> None:
             print(f"Activated {len(memories)} memories associated with '{args.concept}'.")
             _print_memories(session, sorted(memories, key=lambda memory: memory.weight, reverse=True))
         elif args.command == "memories":
-            _print_memories(session, list_memories(session))
+            _print_memories(session, list_memories(session, include_absorbed=args.include_absorbed))
+        elif args.command == "consolidate":
+            patterns = consolidate_memories(session)
+            print(f"Consolidated {len(patterns)} pattern(s).")
+            _print_table(
+                "Patterns",
+                ["ID", "Summary", "Importance", "Weight", "Evidence", "Concepts", "Tone"],
+                [
+                    [
+                        str(pattern.id),
+                        pattern.summary,
+                        f"{pattern.importance:.1f}",
+                        f"{pattern.weight:.1f}",
+                        str(pattern.evidence_count),
+                        ", ".join(pattern.concepts),
+                        pattern.tone,
+                    ]
+                    for pattern in patterns
+                ],
+            )
         elif args.command == "patterns":
             detect_patterns(session)
             _print_table(
                 "Patterns",
-                ["ID", "Description", "Strength", "Evidence"],
+                ["ID", "Summary", "Importance", "Weight", "Evidence", "Concepts", "Tone"],
                 [
                     [
                         str(pattern.id),
-                        pattern.description,
-                        f"{pattern.strength:.1f}",
-                        ", ".join(str(memory_id) for memory_id in pattern.evidence_memory_ids),
+                        pattern.summary,
+                        f"{pattern.importance:.1f}",
+                        f"{pattern.weight:.1f}",
+                        str(pattern.evidence_count),
+                        ", ".join(pattern.concepts),
+                        pattern.tone,
                     ]
                     for pattern in list_patterns(session)
                 ],
@@ -113,14 +140,16 @@ def main(argv: list[str] | None = None) -> None:
                 ],
             )
         elif args.command == "thoughts":
-            thoughts = current_thoughts(session)
+            detect_patterns(session)
+            generate_opinions(session)
+            thoughts = current_thoughts(session, include_absorbed=args.include_absorbed)
             print("Current Thoughts\n")
             print("Memories:")
             for memory in thoughts.memories:
                 print(f"- {memory.summary} (weight {memory.weight:.1f})")
             print("\nPatterns:")
             for pattern in thoughts.patterns:
-                print(f"- {pattern.description} (strength {pattern.strength:.1f})")
+                print(f"- {pattern.summary} (weight {pattern.weight:.1f})")
             print("\nOpinions:")
             for opinion in thoughts.opinions:
                 print(f"- {opinion.belief} (confidence {opinion.confidence:.1f})")

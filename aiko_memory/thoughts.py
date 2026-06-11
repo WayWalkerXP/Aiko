@@ -16,10 +16,10 @@ class CurrentThoughts:
     opinions: list[Opinion]
 
 
-def current_thoughts(session: Session, limit: int = 3) -> CurrentThoughts:
+def current_thoughts(session: Session, limit: int = 3, include_absorbed: bool = False) -> CurrentThoughts:
     """Return top memories, patterns, and opinions for display."""
     return CurrentThoughts(
-        memories=list_memories(session)[:limit],
+        memories=list_memories(session, include_absorbed=include_absorbed)[:limit],
         patterns=list_patterns(session)[:limit],
         opinions=list_opinions(session)[:limit],
     )
