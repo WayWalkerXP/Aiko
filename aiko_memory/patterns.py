@@ -11,6 +11,13 @@ PATTERN_MIN_SHARED_CONCEPTS = 2
 PATTERN_STRENGTH_PER_MEMORY = 20.0
 PATTERN_STRENGTH_ASSOCIATION_BONUS = 10.0
 PERSON_CONCEPTS = {"jack", "aiko", "emi"}
+HOUSEHOLD_BEHAVIOR_LABELS = {
+    "socks": "socks",
+    "dishes": "dishes",
+    "trash": "trash",
+    "laundry_basket": "laundry basket",
+    "clutter": "clutter",
+}
 
 
 def _concept_label(concept: str) -> str:
@@ -24,25 +31,46 @@ def _choose_target(concepts: tuple[str, ...]) -> str:
     return concepts[0]
 
 
+def _evidence_concepts(evidence_ids: set[int], session: Session) -> set[str]:
+    from aiko_memory.repository import memory_concepts
+
+    evidence_concepts = set()
+    for memory_id in evidence_ids:
+        evidence_concepts.update(memory_concepts(session, memory_id))
+    return evidence_concepts
+
+
+def _household_behavior_labels(concepts: set[str]) -> list[str]:
+    return [label for concept, label in HOUSEHOLD_BEHAVIOR_LABELS.items() if concept in concepts]
+
+
+def _format_examples(labels: list[str]) -> str:
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return f"{labels[0]} and {labels[1]}"
+    return f"{', '.join(labels[:-1])}, and {labels[-1]}"
+
+
 def describe_pattern(concepts: tuple[str, ...], evidence_ids: set[int], session: Session) -> str:
     """Create a simple human-readable description for a concept cluster."""
     target = _choose_target(concepts)
     concept_set = set(concepts)
     target_title = _concept_label(target).title()
+    evidence_concepts = _evidence_concepts(evidence_ids, session)
+    household_behaviors = _household_behavior_labels(evidence_concepts)
 
+    if target == "jack" and len(household_behaviors) >= 2:
+        examples = _format_examples(household_behaviors)
+        return f"Jack repeatedly leaves household tasks unfinished, including {examples}."
     if {"jack", "socks"}.issubset(concept_set):
-        evidence_concepts = set()
-        for memory_id in evidence_ids:
-            from aiko_memory.repository import memory_concepts
-
-            evidence_concepts.update(memory_concepts(session, memory_id))
         if "laundry" in evidence_concepts or "home" in evidence_concepts:
             return "Jack often leaves socks around the home."
         return "Jack often leaves socks out."
     if {"emi", "festival"}.issubset(concept_set):
         return "Emi seems nervous in festival crowds."
     if {"jack", "trash"}.issubset(concept_set):
-        return "Jack sometimes forgets household chores."
+        return "Jack sometimes leaves trash unattended."
 
     other_concepts = [_concept_label(c) for c in concepts if c != target]
     evidence_samples = [get_memory(session, memory_id) for memory_id in sorted(evidence_ids)[:1]]

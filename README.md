@@ -105,16 +105,18 @@ The boosted memory is clamped to 100 and its `last_activated_at` timestamp is up
 For the MVP, pattern detection is deliberately simple. If three or more memories share two or more concepts, the engine creates or strengthens a pattern. The first hardcoded template recognizes Jack/socks/laundry evidence as:
 
 ```text
-Jack often leaves socks around the house.
+Jack often leaves socks around the home.
 ```
 
 ### Opinion generation
 
-Strong patterns become simple subjective opinions. For example, the Jack socks pattern can become:
+Strong patterns become simple subjective opinions. A pattern or opinion should stay concrete when the evidence only shows one recurring behavior. For example, the Jack socks pattern becomes:
 
 ```text
-Jack tends to forget small household chores, especially laundry.
+Jack often leaves socks around the home.
 ```
+
+Broader household summaries are reserved for evidence that spans multiple behavior types, such as socks, dishes, and trash.
 
 ## Run tests
 
