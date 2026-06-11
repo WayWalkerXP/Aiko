@@ -12,7 +12,7 @@ def opinion_from_pattern(pattern: Pattern) -> tuple[str, str] | None:
     """Map a known MVP pattern description into a subjective opinion."""
     description = pattern.description.lower()
     if "jack" in description and "socks" in description:
-        return "Jack", "Jack tends to forget small household chores, especially laundry."
+        return "Jack", "Jack often leaves socks around the home."
     if "jack" in description and "household chores" in description:
         return "Jack", "Jack can be unreliable with small household chores."
     if "emi" in description and "nervous" in description:

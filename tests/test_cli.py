@@ -64,4 +64,4 @@ def test_repeated_tags_readme_commands_activate_and_detect_patterns(tmp_path, ca
 
     assert len(activated) == 3
     assert detected
-    assert any(pattern.summary == "Jack often leaves socks around the house." for pattern in patterns)
+    assert any(pattern.summary == "Jack often leaves socks around the home." for pattern in patterns)

@@ -15,5 +15,8 @@ def test_sock_pattern_creates_jack_laundry_opinion(tmp_path):
         opinions = list_opinions(db)
 
         assert generated
-        assert any(opinion.target == "Jack" and "laundry" in opinion.belief for opinion in opinions)
+        assert any(
+            opinion.target == "Jack" and opinion.belief == "Jack often leaves socks around the home."
+            for opinion in opinions
+        )
         assert max(opinion.confidence for opinion in opinions) >= 50

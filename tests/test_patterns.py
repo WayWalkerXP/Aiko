@@ -13,5 +13,5 @@ def test_three_memories_sharing_two_concepts_create_sock_pattern(tmp_path):
         patterns = list_patterns(db)
 
         assert detected
-        assert any(pattern.description == "Jack often leaves socks around the house." for pattern in patterns)
+        assert any(pattern.description == "Jack often leaves socks around the home." for pattern in patterns)
         assert all(len(pattern.evidence_memory_ids) >= 3 for pattern in patterns)
