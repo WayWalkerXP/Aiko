@@ -127,3 +127,196 @@ pytest
 ## Development notes
 
 Constants such as decay rate, association boost factor, minimum pattern evidence count, and opinion strength threshold live at the top of their modules so the toy model can be tuned easily.
+
+---
+
+# Aiko Ollama Context Test Harness
+
+This repository also includes a standalone Python CLI harness for experimenting with local LLM conversation continuity through Ollama. The harness is intentionally simple: it chats with a locally running Ollama model, periodically asks the model to summarize structured working memory, and occasionally rebuilds the active chat context from that memory plus a few recent verbatim turns.
+
+## Purpose
+
+`aiko_context_test.py` helps test whether a local model can remain coherent during longer conversations when the application uses two lightweight continuity techniques:
+
+1. **Heartbeat memory synchronization**: every configured number of user messages, the model is asked to return JSON describing the current topic, user goals, important facts, open threads, emotional tone, and other continuity details.
+2. **Context reset / rebuild**: every configured number of user messages, the script simulates clearing older context by rebuilding its local Ollama message list from the original starter prompt, the current working memory JSON, and the most recent turns.
+
+The script does not depend on a special Ollama `/clear` command. It only rebuilds the local `messages` list that is sent to Ollama's `/api/chat` endpoint.
+
+## Install dependencies
+
+From the repository root, install the small runtime dependency set:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+The harness uses:
+
+- `requests` for Ollama's HTTP API.
+- `colorama` for cross-platform colored terminal output.
+
+## Run Ollama
+
+Install Ollama from <https://ollama.com/> if it is not already installed, then start the local server:
+
+```bash
+ollama serve
+```
+
+On many desktop installs, Ollama may already be running in the background. The sample configuration expects the server at:
+
+```text
+http://localhost:11434
+```
+
+## Pull a model
+
+The sample INI file uses `gemma3:4b`:
+
+```bash
+ollama pull gemma3:4b
+```
+
+You can use another local model if it appears in:
+
+```bash
+ollama list
+```
+
+If you change models, update `model` in `aiko_context_test.ini`.
+
+## Edit the INI file
+
+All runtime settings live in `aiko_context_test.ini`:
+
+```ini
+[ollama]
+base_url = http://localhost:11434
+model = gemma3:4b
+
+[prompt]
+starter_prompt =
+    You are Aiko, a warm, emotionally aware AI companion.
+    Continue naturally and preserve conversational continuity.
+
+[generation]
+temperature = 0.7
+top_p = 0.9
+top_k = 40
+repeat_penalty = 1.1
+num_ctx = 8192
+num_predict = 512
+stream = true
+
+[memory]
+heartbeat_interval = 5
+clear_interval = 15
+recent_turns_to_keep = 4
+
+[logging]
+log_dir = logs
+save_full_transcript = true
+debug = true
+```
+
+Important settings:
+
+- `base_url`: Ollama server URL.
+- `model`: local Ollama model name.
+- `starter_prompt`: initial system prompt used at startup and after rebuilds.
+- `heartbeat_interval`: number of user messages between automatic memory updates. Default behavior is 5 when omitted.
+- `clear_interval`: number of user messages between automatic context rebuilds. Default behavior is 15 when omitted.
+- `recent_turns_to_keep`: number of recent user/assistant turns to preserve verbatim during reset. Default behavior is 4 when omitted.
+- `stream`: when `true`, assistant tokens are printed as they arrive.
+- `save_full_transcript`: when `true`, full user and assistant text is written to the JSONL log.
+- `debug`: when `true`, status messages show heartbeat/reset activity and a rough context-size estimate.
+
+## Run the chatbot
+
+With Ollama running and the configured model pulled:
+
+```bash
+python aiko_context_test.py
+```
+
+To use a different configuration file:
+
+```bash
+python aiko_context_test.py --config path/to/other.ini
+```
+
+At startup, the script loads the INI file, connects to Ollama, checks that the requested model is available, places the starter prompt in the active message list as a system message, and opens a terminal chat loop.
+
+## Slash commands
+
+Inside the chat prompt, use:
+
+- `/quit` exits the program.
+- `/exit` exits the program.
+- `/heartbeat` manually triggers a working-memory update.
+- `/clear` manually rebuilds the active context from the memory packet and recent turns.
+- `/memory` displays the current structured working memory.
+- `/history` displays the currently retained active message history.
+- `/help` displays available commands.
+
+## Logs
+
+The script creates one timestamped JSONL log file per run in the configured `log_dir`, which defaults to `logs`:
+
+```text
+logs/aiko_context_test_YYYYMMDDTHHMMSSZ.jsonl
+```
+
+Logged event types include:
+
+- `program_start`
+- `user_message`
+- `assistant_message`
+- `heartbeat_started`
+- `heartbeat_completed`
+- `heartbeat_parse_failed`
+- `context_reset_started`
+- `context_reset_completed`
+- `ollama_error`
+- `program_exit`
+
+When `save_full_transcript = false`, user and assistant transcript events store message lengths instead of full content. Heartbeat prompts, heartbeat responses, parsed memory, reset packets, errors, and start/exit events are still logged for debugging the continuity experiment.
+
+## What heartbeat means
+
+A heartbeat is a memory synchronization pass. The script sends the current conversation plus a JSON-only instruction asking the model to update this structure:
+
+```json
+{
+  "current_topic": "",
+  "user_goal": "",
+  "important_facts": [],
+  "open_threads": [],
+  "emotional_tone": "",
+  "assistant_stance": "",
+  "recent_references": [],
+  "must_not_forget_next": [],
+  "summary_since_last_heartbeat": ""
+}
+```
+
+If the model returns valid JSON, the parsed object becomes the new working memory. If parsing fails, the raw response is logged, the previous memory is preserved, and chat continues.
+
+## What reset means
+
+A reset is a local context rebuild. The script preserves the working memory and the last configured number of recent user/assistant turns, then replaces the active message list with:
+
+1. The original starter/system prompt.
+2. A system continuity packet containing the current memory JSON and recent turns.
+3. The recent turns themselves.
+
+The next user message is then sent normally. The model is instructed not to mention that context was reset.
+
+## Known limitations
+
+- The token/context display is only a rough character-count estimate, not a tokenizer-accurate count.
+- The heartbeat JSON is generated by the model and can be incomplete, stale, or invalid.
+- The reset packet can omit older details if the heartbeat memory failed to capture them.
+- The harness uses Ollama's HTTP API directly and does not implement retries, tool calling, embeddings, or persistent long-term memory.
+- Very small or heavily quantized models may struggle to produce strict JSON or preserve subtle conversational continuity.
