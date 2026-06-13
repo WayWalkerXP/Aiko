@@ -155,6 +155,7 @@ The harness uses:
 
 - `requests` for Ollama's HTTP API.
 - `colorama` for cross-platform colored terminal output.
+- `json-repair` for a last-chance heartbeat parser when a local model returns almost-valid JSON.
 
 ## Run Ollama
 
@@ -213,6 +214,9 @@ stream = true
 heartbeat_interval = 5
 clear_interval = 15
 recent_turns_to_keep = 4
+use_ollama_json_mode = true
+use_json_repair = true
+log_raw_heartbeat = true
 
 [logging]
 log_dir = logs
@@ -228,9 +232,47 @@ Important settings:
 - `heartbeat_interval`: number of user messages between automatic memory updates. Default behavior is 5 when omitted.
 - `clear_interval`: number of user messages between automatic context rebuilds. Default behavior is 15 when omitted.
 - `recent_turns_to_keep`: number of recent user/assistant turns to preserve verbatim during reset. Default behavior is 4 when omitted.
-- `stream`: when `true`, assistant tokens are printed as they arrive.
+- `use_ollama_json_mode`: when `true`, heartbeat requests include Ollama's `"format": "json"` request option. This applies only to heartbeat memory synchronization calls, which are always sent with `stream = false`; normal chat responses can still use the global `stream` setting.
+- `use_json_repair`: when `true`, the harness tries `json-repair` if direct `json.loads()` parsing fails for a heartbeat response.
+- `log_raw_heartbeat`: when `true`, JSONL logs include the full raw and repaired heartbeat text. Set it to `false` to log response lengths instead.
+- `stream`: when `true`, assistant tokens are printed as they arrive for normal chat responses.
 - `save_full_transcript`: when `true`, full user and assistant text is written to the JSONL log.
 - `debug`: when `true`, status messages show heartbeat/reset activity and a rough context-size estimate.
+
+## Heartbeat JSON robustness
+
+Heartbeat memory synchronization asks the model to return a fixed JSON object with keys such as `current_topic`, `important_facts`, `open_threads`, and `summary_since_last_heartbeat`. The harness now sends heartbeat calls to Ollama with JSON mode enabled by default:
+
+```json
+{
+  "format": "json",
+  "stream": false
+}
+```
+
+JSON mode strongly nudges Ollama to produce parseable JSON, but malformed JSON can still happen with local models. A model may add explanatory text, wrap the response in markdown, omit a quote, or insert literal line breaks inside a quoted string value. Those responses may be semantically correct but still fail Python's strict `json.loads()` parser.
+
+For that reason, heartbeat parsing is defensive:
+
+1. The harness first tries `json.loads(raw_response)`.
+2. If direct parsing fails and `use_json_repair = true`, it calls `json_repair.repair_json(raw_response)`.
+3. It then tries `json.loads(repaired_response)`.
+4. If repair still fails, the app logs the error and keeps the previous working memory instead of crashing.
+
+After a heartbeat object is parsed, the harness validates the expected schema, fills missing keys with safe defaults, converts list fields that came back as strings into one-item lists, and joins string fields that came back as lists into single-line strings.
+
+Raw heartbeat diagnostics are written to the JSONL log under the configured `log_dir`. Look for event types such as `heartbeat_started`, `heartbeat_raw_response`, `heartbeat_json_parse_succeeded`, `heartbeat_json_repair_attempted`, `heartbeat_json_repair_succeeded`, `heartbeat_json_repair_failed`, and `heartbeat_completed`. These events include the heartbeat prompt, raw model response when enabled, repaired response when repair was attempted, parse success/failure status, final parsed memory object, and parse errors.
+
+To disable JSON mode or repair, edit the INI file:
+
+```ini
+[memory]
+use_ollama_json_mode = false
+use_json_repair = false
+log_raw_heartbeat = false
+```
+
+Disabling `log_raw_heartbeat` is useful when you want smaller logs or do not want full conversation-derived heartbeat content written to disk.
 
 ## Run the chatbot
 

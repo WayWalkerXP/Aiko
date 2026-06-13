@@ -19,7 +19,27 @@ from typing import Any, Iterable
 
 import requests
 from colorama import Fore, Style, init as colorama_init
+from json_repair import repair_json
 
+
+EXPECTED_MEMORY_KEYS = [
+    "current_topic",
+    "user_goal",
+    "important_facts",
+    "open_threads",
+    "emotional_tone",
+    "assistant_stance",
+    "recent_references",
+    "must_not_forget_next",
+    "summary_since_last_heartbeat",
+]
+
+LIST_MEMORY_KEYS = {
+    "important_facts",
+    "open_threads",
+    "recent_references",
+    "must_not_forget_next",
+}
 
 MEMORY_TEMPLATE: dict[str, Any] = {
     "current_topic": "",
@@ -66,6 +86,9 @@ class MemoryConfig:
     heartbeat_interval: int = 5
     clear_interval: int = 15
     recent_turns_to_keep: int = 4
+    use_ollama_json_mode: bool = True
+    use_json_repair: bool = True
+    log_raw_heartbeat: bool = True
 
 
 @dataclass(frozen=True)
@@ -122,6 +145,7 @@ class OllamaClient:
         messages: list[dict[str, str]],
         options: dict[str, Any],
         stream: bool,
+        response_format: str | None = None,
     ) -> str:
         payload = {
             "model": self.model,
@@ -129,6 +153,8 @@ class OllamaClient:
             "options": options,
             "stream": stream,
         }
+        if response_format is not None:
+            payload["format"] = response_format
         response = requests.post(
             f"{self.base_url}/api/chat",
             json=payload,
@@ -317,34 +343,106 @@ class AikoContextHarness:
         self._debug("[heartbeat] Updating working memory...")
         prompt = self._heartbeat_prompt()
         heartbeat_messages = [*self.messages, {"role": "user", "content": prompt}]
-        self.logger.write("heartbeat_started", prompt=prompt)
+        self.logger.write(
+            "heartbeat_started",
+            prompt=prompt,
+            use_ollama_json_mode=self.config.memory.use_ollama_json_mode,
+            use_json_repair=self.config.memory.use_json_repair,
+        )
 
         try:
             raw_response = self.client.chat(
                 heartbeat_messages,
                 self.generation_options,
                 stream=False,
+                response_format="json" if self.config.memory.use_ollama_json_mode else None,
             )
         except (requests.RequestException, json.JSONDecodeError) as exc:
             self._error(f"Heartbeat failed: {exc}")
             self.logger.write("ollama_error", operation="heartbeat", error=str(exc))
             return
 
-        parsed = parse_memory_json(raw_response)
+        raw_payload = heartbeat_log_payload(raw_response, self.config.memory.log_raw_heartbeat)
+        self.logger.write("heartbeat_raw_response", **raw_payload)
+
+        parsed: dict[str, Any] | None = None
+        parse_error: str | None = None
+        try:
+            direct_data = json.loads(raw_response)
+            if isinstance(direct_data, dict):
+                parsed = direct_data
+            else:
+                parse_error = f"Heartbeat JSON root was {type(direct_data).__name__}, not object."
+        except json.JSONDecodeError as exc:
+            parse_error = str(exc)
+
+        if parsed is not None:
+            self.logger.write("heartbeat_json_parse_succeeded", direct_parse_succeeded=True)
+        else:
+            self.logger.write(
+                "heartbeat_json_parse_failed",
+                direct_parse_succeeded=False,
+                error=parse_error,
+            )
+
+        repaired_response: str | None = None
+        repair_error: str | None = None
+        if parsed is None and self.config.memory.use_json_repair:
+            try:
+                repaired_response = repair_json(raw_response)
+                self.logger.write(
+                    "heartbeat_json_repair_attempted",
+                    **heartbeat_log_payload(
+                        repaired_response, self.config.memory.log_raw_heartbeat, "repaired_response"
+                    ),
+                )
+                repaired_data = json.loads(repaired_response)
+                if isinstance(repaired_data, dict):
+                    parsed = repaired_data
+                    self.logger.write("heartbeat_json_repair_succeeded")
+                    self._debug("[heartbeat] JSON repair was needed and succeeded.")
+                else:
+                    repair_error = (
+                        f"Repaired heartbeat JSON root was {type(repaired_data).__name__}, "
+                        "not object."
+                    )
+            except (json.JSONDecodeError, ValueError, TypeError) as exc:
+                repair_error = str(exc)
+
+            if parsed is None:
+                self.logger.write(
+                    "heartbeat_json_repair_failed",
+                    error=repair_error,
+                    raw_response=raw_response if self.config.memory.log_raw_heartbeat else None,
+                    repaired_response=(
+                        repaired_response if self.config.memory.log_raw_heartbeat else None
+                    ),
+                )
+
         if parsed is None:
+            failure_error = repair_error or parse_error or "unknown parse failure"
             self._error("Heartbeat response was not valid JSON. Keeping previous memory.")
             self.logger.write(
                 "heartbeat_parse_failed",
-                raw_response=raw_response,
+                error=failure_error,
                 previous_memory=self.working_memory,
+                raw_response=raw_response if self.config.memory.log_raw_heartbeat else None,
+                raw_response_length=len(raw_response),
+                repaired_response=(
+                    repaired_response if self.config.memory.log_raw_heartbeat else None
+                ),
             )
             return
 
         self.working_memory = normalize_memory(parsed)
         self.logger.write(
             "heartbeat_completed",
-            raw_response=raw_response,
             parsed_memory=self.working_memory,
+            raw_response=raw_response if self.config.memory.log_raw_heartbeat else None,
+            raw_response_length=len(raw_response),
+            repaired_response=(
+                repaired_response if self.config.memory.log_raw_heartbeat else None
+            ),
         )
         self._debug("[heartbeat] Working memory updated.")
 
@@ -369,9 +467,13 @@ class AikoContextHarness:
 
     def _heartbeat_prompt(self) -> str:
         return (
-            "Update the structured working memory for this conversation. "
-            "Return JSON only, with no markdown, commentary, or code fence.\n\n"
-            "Use this exact object shape:\n"
+            "Update the structured working memory for this conversation.\n"
+            "Return only valid JSON. Do not use markdown. Do not use code fences. "
+            "Do not include commentary.\n"
+            "Do not insert literal line breaks inside quoted string values. "
+            "All string values must be single-line strings. If a value would contain "
+            "a newline, replace it with a space. Return compact JSON if possible.\n\n"
+            "Use this exact object shape and these exact keys:\n"
             f"{json.dumps(MEMORY_TEMPLATE, ensure_ascii=False, indent=2)}\n\n"
             "Preserve durable facts from the existing working memory when still relevant.\n"
             "Existing working memory:\n"
@@ -458,6 +560,11 @@ def parse_config(path: Path) -> AppConfig:
             heartbeat_interval=parser.getint("memory", "heartbeat_interval", fallback=5),
             clear_interval=parser.getint("memory", "clear_interval", fallback=15),
             recent_turns_to_keep=parser.getint("memory", "recent_turns_to_keep", fallback=4),
+            use_ollama_json_mode=parser.getboolean(
+                "memory", "use_ollama_json_mode", fallback=True
+            ),
+            use_json_repair=parser.getboolean("memory", "use_json_repair", fallback=True),
+            log_raw_heartbeat=parser.getboolean("memory", "log_raw_heartbeat", fallback=True),
         ),
         logging=LoggingConfig(
             log_dir=Path(parser.get("logging", "log_dir")),
@@ -469,18 +576,17 @@ def parse_config(path: Path) -> AppConfig:
     )
 
 
-def parse_memory_json(raw_response: str) -> dict[str, Any] | None:
-    cleaned = raw_response.strip()
-    if cleaned.startswith("```"):
-        lines = cleaned.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        cleaned = "\n".join(lines).strip()
+def heartbeat_log_payload(
+    response: str, log_raw_heartbeat: bool, response_key: str = "raw_response"
+) -> dict[str, Any]:
+    if log_raw_heartbeat:
+        return {response_key: response}
+    return {f"{response_key}_length": len(response)}
 
+
+def parse_memory_json(raw_response: str) -> dict[str, Any] | None:
     try:
-        data = json.loads(cleaned)
+        data = json.loads(raw_response)
     except json.JSONDecodeError:
         return None
 
@@ -490,14 +596,23 @@ def parse_memory_json(raw_response: str) -> dict[str, Any] | None:
 
 
 def normalize_memory(memory: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(MEMORY_TEMPLATE)
-    for key, default in MEMORY_TEMPLATE.items():
+    normalized: dict[str, Any] = {}
+    for key in EXPECTED_MEMORY_KEYS:
+        default: str | list[str] = [] if key in LIST_MEMORY_KEYS else ""
         value = memory.get(key, default)
-        if isinstance(default, list) and not isinstance(value, list):
-            value = [str(value)] if value else []
-        elif isinstance(default, str) and not isinstance(value, str):
-            value = json.dumps(value, ensure_ascii=False) if value else ""
-        normalized[key] = value
+        if key in LIST_MEMORY_KEYS:
+            if isinstance(value, list):
+                normalized[key] = value
+            elif value:
+                normalized[key] = [str(value)]
+            else:
+                normalized[key] = []
+        elif isinstance(value, list):
+            normalized[key] = " ".join(str(item) for item in value if item)
+        elif value:
+            normalized[key] = str(value)
+        else:
+            normalized[key] = ""
     return normalized
 
 
